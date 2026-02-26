@@ -1,0 +1,71 @@
+{
+  "name": "qmx",
+  "version": "1.0.0",
+  "description": "QMX - Qwen Multi-agent eXtension: Power tools for Qwen Code CLI",
+  "main": "dist/index.js",
+  "bin": {
+    "qmx": "./bin/qmx.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "qwen",
+    "qwen-code",
+    "multi-agent",
+    "orchestration",
+    "ai",
+    "llm",
+    "developer-tools"
+  ],
+  "author": "QMX Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qmx/qmx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/qmx/qmx/issues"
+  },
+  "homepage": "https://github.com/qmx/qmx#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "commander": "^12.0.0",
+    "ora": "^8.0.1",
+    "chalk": "^5.3.0",
+    "execa": "^8.0.1",
+    "proper-lockfile": "^4.1.2",
+    "toml": "^3.0.0",
+    "uuid": "^9.0.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/uuid": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.3.0",
+    "@vitest/coverage-v8": "^1.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist",
+    "prompts",
+    "skills",
+    "templates",
+    "scripts",
+    "README.md"
+  ]
+}

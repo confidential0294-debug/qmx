@@ -1,0 +1,263 @@
+#!/bin/bash
+# QMX Team Command - Matches omx team syntax and behavior
+# Usage: team [ralph] [N:agent-type] "task description"
+# Spawns multiple tmux panes with central messaging
+
+set -e
+
+# Check if running inside tmux
+if [ -z "$TMUX" ]; then
+    echo "⚠ Warning: Not running inside tmux"
+    echo "Team mode requires tmux. Start a session:"
+    echo "  tmux"
+    echo ""
+    echo "Then run: team 3:executor \"task\""
+    exit 1
+fi
+
+# Parse arguments - matches omx team syntax
+MODE=""
+WORKERS_ROLE=""
+TASK=""
+
+# Check for mode flags
+if [ "$1" = "ralph" ]; then
+    MODE="ralph"
+    shift
+fi
+
+# Parse N:role format
+if [[ "$1" =~ ^[0-9]+:[a-zA-Z_-]+$ ]]; then
+    WORKERS_ROLE="$1"
+    shift
+fi
+
+# Rest is the task description
+TASK="$*"
+
+# Show usage if missing required args
+if [ -z "$TASK" ]; then
+    echo "QMX Team - tmux-based multi-agent orchestration"
+    echo ""
+    echo "Usage:"
+    echo "  team [ralph] N:role \"task description\""
+    echo ""
+    echo "Arguments:"
+    echo "  ralph     Use methodical step-by-step mode (optional)"
+    echo "  N:role    Number and role (e.g., 3:executor)"
+    echo "  task      Task description in quotes"
+    echo ""
+    echo "Examples:"
+    echo "  team 3:executor \"Fix TypeScript errors in src/\""
+    echo "  team ralph 2:planner \"Plan the migration\""
+    echo "  team 4:reviewer \"Review all open PRs\""
+    echo ""
+    echo "How it works:"
+    echo "  - Spawns N tmux panes with independent Qwen Code sessions"
+    echo "  - Central messaging via .qmx/state/team/.../mailbox/"
+    echo "  - Coordinated through shared state files"
+    echo ""
+    
+    if [ -z "$WORKERS_ROLE" ]; then
+        exit 0
+    fi
+fi
+
+# Extract worker count and role
+WORKERS=$(echo "$WORKERS_ROLE" | cut -d: -f1)
+ROLE=$(echo "$WORKERS_ROLE" | cut -d: -f2)
+
+# Validate workers
+if ! [[ "$WORKERS" =~ ^[0-9]+$ ]] || [ "$WORKERS" -lt 1 ] || [ "$WORKERS" -gt 10 ]; then
+    echo "Error: Worker count must be between 1 and 10"
+    exit 1
+fi
+
+# Validate role
+VALID_ROLES="executor reviewer tester debugger refactorer documenter architect planner"
+if ! echo "$VALID_ROLES" | grep -qw "$ROLE"; then
+    echo "⚠ Warning: Unknown role '$ROLE'"
+    echo "  Standard roles: executor, reviewer, tester, debugger, etc."
+    echo "  Continuing anyway..."
+fi
+
+# Generate team name from task
+TEAM_NAME="team-$(date +%s)-$(echo "$TASK" | md5sum | cut -c1-8)"
+
+# Create team state directory
+mkdir -p ".qmx/state/team/$TEAM_NAME/workers"
+mkdir -p ".qmx/state/team/$TEAM_NAME/mailbox"
+mkdir -p ".qmx/state/team/$TEAM_NAME/tasks"
+
+# Create team config
+cat > ".qmx/state/team/$TEAM_NAME/config.json" << EOF
+{
+  "name": "$TEAM_NAME",
+  "role": "$ROLE",
+  "workers": $WORKERS,
+  "task": "$TASK",
+  "mode": "${MODE:-default}",
+  "createdAt": "$(date -Iseconds)",
+  "status": "starting"
+}
+EOF
+
+# Create worker instructions
+cat > ".qmx/state/team/$TEAM_NAME/worker-agents.md" << EOF
+# Team Worker Instructions
+
+## Team: $TEAM_NAME
+## Role: $ROLE
+## Task: $TASK
+
+Each worker operates as an independent Qwen Code session in a tmux pane.
+
+## Communication
+
+- Leader → Worker: Write to worker inbox.md, send trigger via tmux
+- Worker → Leader: Write to mailbox/worker-N.json, update task status
+
+## State Files
+
+- Config: .qmx/state/team/$TEAM_NAME/config.json
+- Tasks: .qmx/state/team/$TEAM_NAME/tasks/
+- Workers: .qmx/state/team/$TEAM_NAME/workers/
+- Mailbox: .qmx/state/team/$TEAM_NAME/mailbox/
+EOF
+
+echo "🚀 Launching QMX Team..."
+echo "   Team: $TEAM_NAME"
+echo "   Workers: $WORKERS"
+echo "   Role: $ROLE"
+echo "   Task: $TASK"
+echo "   Mode: ${MODE:-default}"
+echo ""
+
+# Get current tmux session
+CURRENT_SESSION=$(tmux display-message -p '#S')
+CURRENT_WINDOW=$(tmux display-message -p '#I')
+
+# Split panes for workers
+echo "📦 Creating worker panes..."
+PANE_IDS=()
+
+for i in $(seq 1 $WORKERS); do
+    if [ $i -eq 1 ]; then
+        # First worker uses current pane
+        PANE_ID=$(tmux list-panes -t "$CURRENT_SESSION:$CURRENT_WINDOW" -F '#{pane_id}' | head -1)
+    else
+        # Split pane for additional workers
+        PANE_ID=$(tmux split-window -t "$CURRENT_SESSION:$CURRENT_WINDOW" -P -F '#{pane_id}')
+    fi
+    PANE_IDS+=("$PANE_ID")
+    echo "   Worker $i: $PANE_ID"
+done
+
+echo ""
+
+# Launch workers in each pane
+echo "🔧 Starting workers..."
+for i in $(seq 1 $WORKERS); do
+    PANE_ID=${PANE_IDS[$((i-1))]}
+    WORKER_DIR=".qmx/state/team/$TEAM_NAME/workers/worker-$i"
+    mkdir -p "$WORKER_DIR"
+    
+    # Create worker identity
+    cat > "$WORKER_DIR/identity.json" << EOF
+{
+  "id": "worker-$i",
+  "pane": "$PANE_ID",
+  "role": "$ROLE",
+  "team": "$TEAM_NAME"
+}
+EOF
+
+    # Create worker inbox
+    cat > "$WORKER_DIR/inbox.md" << EOF
+# Worker $i Instructions
+
+**Team:** $TEAM_NAME
+**Role:** $ROLE
+**Task:** $TASK
+
+## Your Assignment
+
+Execute the assigned task as an independent agent.
+Report progress via the mailbox system.
+
+## Communication
+
+1. Read this inbox.md
+2. Execute task
+3. Write updates to: .qmx/state/team/$TEAM_NAME/mailbox/worker-$i.json
+4. Signal completion via tmux
+
+## State
+
+- Identity: $WORKER_DIR/identity.json
+- Mailbox: .qmx/state/team/$TEAM_NAME/mailbox/worker-$i.json
+EOF
+
+    # Create heartbeat
+    cat > "$WORKER_DIR/heartbeat.json" << EOF
+{
+  "worker": "worker-$i",
+  "lastHeartbeat": "$(date -Iseconds)",
+  "status": "starting"
+}
+EOF
+
+    # Send command to pane
+    tmux send-keys -t "$PANE_ID" "echo '🤖 QMX Worker $i starting...'" Enter
+    tmux send-keys -t "$PANE_ID" "echo '   Team: $TEAM_NAME'" Enter
+    tmux send-keys -t "$PANE_ID" "echo '   Role: $ROLE'" Enter
+    tmux send-keys -t "$PANE_ID" "echo '   Task: $TASK'" Enter
+    tmux send-keys -t "$PANE_ID" "" Enter
+    tmux send-keys -t "$PANE_ID" "# Worker $i - Processing inbox..." Enter
+    tmux send-keys -t "$PANE_ID" "cat $WORKER_DIR/inbox.md" Enter
+    tmux send-keys -t "$PANE_ID" "" Enter
+    tmux send-keys -t "$PANE_ID" "# Update heartbeat" Enter
+    tmux send-keys -t "$PANE_ID" "echo '{\"worker\":\"worker-$i\",\"lastHeartbeat\":\"'$(date -Iseconds)'\",\"status\":\"working\"}' > $WORKER_DIR/heartbeat.json" Enter
+    tmux send-keys -t "$PANE_ID" "" Enter
+    tmux send-keys -t "$PANE_ID" "# Signal leader" Enter
+    tmux send-keys -t "$PANE_ID" "echo '{\"from\":\"worker-$i\",\"type\":\"ack\",\"message\":\"Worker $i started\"}' > .qmx/state/team/$TEAM_NAME/mailbox/worker-$i.json" Enter
+    tmux send-keys -t "$PANE_ID" "tmux display-message 'Worker $i: Started'" Enter
+done
+
+# Update team status
+cat > ".qmx/state/team/$TEAM_NAME/config.json" << EOF
+{
+  "name": "$TEAM_NAME",
+  "role": "$ROLE",
+  "workers": $WORKERS,
+  "task": "$TASK",
+  "mode": "${MODE:-default}",
+  "createdAt": "$(date -Iseconds)",
+  "status": "running",
+  "panes": $(printf '%s\n' "${PANE_IDS[@]}" | jq -R . | jq -s .)
+}
+EOF
+
+# Create leader nudge file
+cat > ".qmx/state/team-leader-nudge.json" << EOF
+{
+  "team": "$TEAM_NAME",
+  "lastNudge": "$(date -Iseconds)",
+  "message": "Team $TEAM_NAME started with $WORKERS workers"
+}
+EOF
+
+echo ""
+echo "✅ Team launched!"
+echo ""
+echo "📊 Team Info:"
+echo "   Name: $TEAM_NAME"
+echo "   State: .qmx/state/team/$TEAM_NAME/"
+echo "   Mailbox: .qmx/state/team/$TEAM_NAME/mailbox/"
+echo ""
+echo "📋 Commands:"
+echo "   Monitor:  qmx team status $TEAM_NAME"
+echo "   Stop:     qmx team shutdown $TEAM_NAME"
+echo "   List:     qmx team list"
+echo ""
+echo "💬 Leader nudge: tmux display-message (check for worker updates)"

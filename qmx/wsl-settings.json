@@ -1,0 +1,33 @@
+{
+  "$version": 3,
+  "security": {
+    "auth": {
+      "selectedType": "qwen-oauth"
+    }
+  },
+  "mcpServers": {
+    "qmx-state": {
+      "command": "node",
+      "args": ["/home/twisted/qmx/dist/mcp/state-server.js"],
+      "env": {}
+    },
+    "qmx-memory": {
+      "command": "node",
+      "args": ["/home/twisted/qmx/dist/mcp/memory-server.js"],
+      "env": {}
+    },
+    "qmx-code-intel": {
+      "command": "node",
+      "args": ["/home/twisted/qmx/dist/mcp/code-intel-server.js"],
+      "env": {}
+    },
+    "qmx-trace": {
+      "command": "node",
+      "args": ["/home/twisted/qmx/dist/mcp/trace-server.js"],
+      "env": {}
+    }
+  },
+  "context": {
+    "loadMemoryFromIncludeDirectories": true
+  }
+}

@@ -1,0 +1,47 @@
+#!/bin/bash
+# QMX Team Command Wrapper
+# Usage: team N:role "task description"
+
+set -e
+
+# Parse arguments
+WORKERS_ROLE="$1"
+shift
+TASK="$*"
+
+if [ -z "$WORKERS_ROLE" ] || [ -z "$TASK" ]; then
+    echo "Usage: team N:role \"task description\""
+    echo ""
+    echo "Examples:"
+    echo "  team 3:executor \"Fix TypeScript errors\""
+    echo "  team 4:reviewer \"Review pull requests\""
+    echo "  team 2:tester \"Write integration tests\""
+    exit 1
+fi
+
+# Extract worker count and role
+WORKERS=$(echo "$WORKERS_ROLE" | cut -d: -f1)
+ROLE=$(echo "$WORKERS_ROLE" | cut -d: -f2)
+
+# Validate workers
+if ! [[ "$WORKERS" =~ ^[0-9]+$ ]] || [ "$WORKERS" -lt 1 ] || [ "$WORKERS" -gt 10 ]; then
+    echo "Error: Worker count must be between 1 and 10"
+    exit 1
+fi
+
+# Validate role
+VALID_ROLES="executor reviewer tester debugger refactorer documenter architect planner"
+if ! echo "$VALID_ROLES" | grep -qw "$ROLE"; then
+    echo "Error: Invalid role '$ROLE'"
+    echo "Valid roles: $VALID_ROLES"
+    exit 1
+fi
+
+# Launch team
+echo "🚀 Launching QMX Team..."
+echo "   Workers: $WORKERS"
+echo "   Role: $ROLE"
+echo "   Task: $TASK"
+echo ""
+
+qmx team start "$WORKERS:$ROLE" "$TASK"
