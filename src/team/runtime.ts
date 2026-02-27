@@ -120,6 +120,8 @@ export function resolveWorkerLaunchArgsFromEnv(
   if (env.QMX_YOLO === '1' || !env.QMX_YOLO) {
     args.push('-y');
   }
+  // Add --prompt-interactive for auto-execution of worker prompts
+  args.push('--prompt-interactive');
   return args;
 }
 

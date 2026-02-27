@@ -293,7 +293,7 @@ export function listTeamSessions(): string[] {
 function buildWorkerStartupCommand(
   teamName: string,
   workerIndex: number,
-  launchArgs: string[],
+  _launchArgs: string[],
   cwd: string,
   extraEnv: Record<string, string>
 ): string {
@@ -301,20 +301,16 @@ function buildWorkerStartupCommand(
   const workerEnv = {
     QMX_TEAM_WORKER: `${teamName}/${workerName}`,
     QMX_TEAM_STATE_ROOT: join(cwd, '.qmx', 'state'),
+    QMX_LEADER_CWD: cwd,
     ...extraEnv,
   };
 
-  const envParts = Object.entries(workerEnv).map(([k, v]) => `${k}=${shellQuoteSingle(v)}`).join(' ');
-  const qwxArgs = launchArgs.length > 0 ? launchArgs.map(shellQuoteSingle).join(' ') : '-y';
-  const qmxCommand = `qwen ${qwxArgs}`;
-  
   const shell = process.env.SHELL || '/bin/sh';
-  const rcFile = shell.endsWith('bash') ? '~/.bashrc' : shell.endsWith('zsh') ? '~/.zshrc' : null;
-  const rcPrefix = rcFile ? `if [ -f ${rcFile} ]; then source ${rcFile}; fi; ` : '';
-  // Start qwen (inbox will be sent via tmux)
-  const inner = `${rcPrefix}${qmxCommand}`;
-  
-  return `env ${envParts} ${shellQuoteSingle(shell)} -lc ${shellQuoteSingle(inner)}`;
+  // Build env vars as exports
+  const envExports = Object.entries(workerEnv).map(([k, v]) => `export ${k}=${shellQuoteSingle(v)};`).join(' ');
+  const workerScript = '/home/twisted/qmx/bin/qmx-worker.sh';
+  // Launch from /home/twisted/qmx where skills/ directory exists
+  return `${shellQuoteSingle(shell)} -lc '${envExports} cd /home/twisted/qmx && exec ${workerScript}'`;
 }
 
 function shellQuoteSingle(value: string): string {
