@@ -40,7 +40,7 @@ export interface WorkerConfig {
   index: number;
   pane_id: string | null;
   pid: number | null;
-  worker_cli: 'qwx' | 'qwen';
+  worker_cli: 'qwen' | 'codex';
   model?: string;
   cwd: string;
   worktree_path?: string;

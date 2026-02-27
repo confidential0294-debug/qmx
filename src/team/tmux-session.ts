@@ -297,20 +297,22 @@ function buildWorkerStartupCommand(
   cwd: string,
   extraEnv: Record<string, string>
 ): string {
+  const workerName = `worker-${workerIndex}`;
   const workerEnv = {
-    QMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
+    QMX_TEAM_WORKER: `${teamName}/${workerName}`,
     QMX_TEAM_STATE_ROOT: join(cwd, '.qmx', 'state'),
     ...extraEnv,
   };
 
   const envParts = Object.entries(workerEnv).map(([k, v]) => `${k}=${shellQuoteSingle(v)}`).join(' ');
   const qwxArgs = launchArgs.length > 0 ? launchArgs.map(shellQuoteSingle).join(' ') : '-y';
-  const qwxCommand = `qwx ${qwxArgs}`;
+  const qmxCommand = `qwen ${qwxArgs}`;
   
   const shell = process.env.SHELL || '/bin/sh';
   const rcFile = shell.endsWith('bash') ? '~/.bashrc' : shell.endsWith('zsh') ? '~/.zshrc' : null;
   const rcPrefix = rcFile ? `if [ -f ${rcFile} ]; then source ${rcFile}; fi; ` : '';
-  const inner = `${rcPrefix}exec ${qwxCommand}`;
+  // Start qwen (inbox will be sent via tmux)
+  const inner = `${rcPrefix}${qmxCommand}`;
   
   return `env ${envParts} ${shellQuoteSingle(shell)} -lc ${shellQuoteSingle(inner)}`;
 }
@@ -330,11 +332,17 @@ export function sendToWorker(
   const captured = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
   const paneContent = captured.ok ? captured.stdout : '';
   
-  const isAtPrompt = paneContent.includes('$ ') || paneContent.includes('❯ ') || paneContent.includes('> ');
+  // Check for shell prompts or qwen prompts
+  const isAtPrompt = paneContent.includes('$ ') || 
+                     paneContent.includes('❯ ') || 
+                     paneContent.includes('> ') ||
+                     paneContent.includes('Qwen') ||
+                     paneContent.includes('How can');
   
-  if (!isAtPrompt && paneContent.length > 50) {
+  // Only send C-c if pane has content and doesn't appear to be at a prompt
+  if (!isAtPrompt && paneContent.length > 100) {
     runTmux(['send-keys', '-t', target, 'C-c']);
-    sleepMs(100);
+    sleepMs(200);
   }
   
   runTmux(['send-keys', '-t', target, '-l', '--', text]);

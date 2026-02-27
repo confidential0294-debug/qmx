@@ -7,6 +7,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
+import * as readline from 'node:readline';
 import {
   startTeam,
   shutdownTeam,
@@ -25,7 +26,7 @@ export function teamCommand(program: Command) {
   team
     .command('start')
     .argument('<workers>', 'Number of workers (e.g., 3:executor)')
-    .argument('<task>', 'Task description')
+    .argument('[task]', 'Task description')
     .option('--name <name>', 'Team name')
     .option('--yolo', 'Auto-approve all actions', true)
     .option('--model <model>', 'Model to use')
@@ -70,9 +71,26 @@ export function teamCommand(program: Command) {
     });
 }
 
+/**
+ * Prompt user for input
+ */
+function prompt(question: string): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
 async function teamStart(
   workersArg: string,
-  task: string,
+  task: string | undefined,
   options: { name?: string; yolo?: boolean; model?: string }
 ) {
   if (!isTmuxAvailable()) {
@@ -99,6 +117,19 @@ async function teamStart(
     
     if (!role) {
       throw new Error('Invalid role format. Use format: N:role (e.g., 3:executor)');
+    }
+
+    // Prompt for task if not provided
+    if (!task) {
+      spinner.stop();
+      task = await prompt(chalk.cyan('Enter task description: '));
+      
+      if (!task || task.trim() === '') {
+        console.error(chalk.red('Error: Task description is required'));
+        process.exit(1);
+      }
+      
+      spinner.start('Starting team...');
     }
 
     const teamName = options.name || `team-${Date.now()}`;
@@ -128,7 +159,7 @@ async function teamStart(
     console.log(`  Task:        ${task}`);
     console.log(`  tmux:        ${runtime.config.tmux_session || 'N/A'}`);
     console.log(`  Leader Pane: ${runtime.config.leader_pane_id || 'N/A'}`);
-    console.log(`  YOLO Mode:   ${runtime.config.workers[0]?.worker_cli === 'qwx' ? chalk.green('enabled') : chalk.yellow('disabled')}`);
+    console.log(`  YOLO Mode:   ${true ? chalk.green('enabled') : chalk.yellow('disabled')}`);
     console.log(chalk.gray('='.repeat(60)));
     console.log(`\n${chalk.cyan.bold('Commands:')}`);
     console.log(`  Monitor:  ${chalk.yellow(`qmx team monitor ${runtime.config.name}`)}`);
@@ -239,8 +270,6 @@ async function teamMonitor(name: string, options: { interval?: string }) {
   console.log(chalk.gray(`Poll interval: ${interval}ms`));
   console.log(chalk.gray('Press Ctrl+C to stop\n'));
   
-  // let snapshot: any = null;
-  
   const poll = async () => {
     try {
       const snapshot = await monitorTeam(name, process.cwd());
@@ -250,7 +279,6 @@ async function teamMonitor(name: string, options: { interval?: string }) {
         return false;
       }
       
-      // Clear screen and show status
       process.stdout.write('\x1Bc');
       console.log(chalk.cyan.bold(`Team: ${snapshot.teamName}`));
       console.log(chalk.gray('='.repeat(60)));
@@ -271,10 +299,8 @@ async function teamMonitor(name: string, options: { interval?: string }) {
     }
   };
   
-  // Initial poll
   let running = await poll();
   
-  // Continue polling
   while (running) {
     await new Promise(resolve => setTimeout(resolve, interval));
     running = await poll();

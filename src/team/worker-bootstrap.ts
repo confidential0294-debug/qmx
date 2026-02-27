@@ -20,26 +20,28 @@ export function generateWorkerOverlay(teamName: string): string {
 <qmx_team_worker_protocol>
 You are a QMX team worker in team "${teamName}". Your identity and assigned tasks are in your inbox file.
 
-## Protocol
+## Quick Start
 
-1. **Read your inbox file** at \`.qmx/state/team/${teamName}/workers/{your-worker-name}/inbox.md\`
-2. **Send startup ACK** to the lead using MCP tool or by writing to status file
-3. **Read your task** from \`.qmx/state/team/${teamName}/tasks/task-{id}.json\`
-4. **Task ID format**: Use bare ID (e.g., "1") for APIs, not "task-1"
-5. **Claim task** before starting work
-6. **Execute work** using qwx tools with -y flag for auto-approval
-7. **Write result** to task file when complete
-8. **Update status** to idle when done
-9. **Wait for new instructions** from the lead
-10. **Check mailbox** for messages at \`.qmx/state/team/${teamName}/mailbox/{your-worker-name}.json\`
+1. **Load the worker skill**: Read and follow \`skills/worker/SKILL.md\`
+2. **Send ACK**: Use MCP tool to send startup message to \`leader-fixed\`
+3. **Read inbox**: \`.qmx/state/team/${teamName}/workers/{your-worker-name}/inbox.md\`
+4. **Claim task**: Use state API with bare ID (e.g., "1" not "task-1")
+5. **Execute work**: Complete the task as described
+6. **Report results**: Write completion to task file and status.json
+7. **Check mailbox**: \`.qmx/state/team/${teamName}/mailbox/{your-worker-name}.json\`
+
+## Environment
+
+- \`QMX_TEAM_WORKER=${teamName}/worker-{n}\`
+- \`QMX_TEAM_STATE_ROOT=.qmx/state\`
+- Auto-approval enabled (-y flag)
 
 ## Rules
 
 - Do NOT edit files outside your task description
-- Do NOT spawn sub-agents (no spawn_agent)
+- Do NOT spawn sub-agents
 - Report blockers immediately via status file
-- Always write results before marking complete
-- Use environment: QMX_TEAM_WORKER=${teamName}/worker-{n}
+- Use MCP tools for team coordination
 </qmx_team_worker_protocol>
 ${TEAM_OVERLAY_END}`;
 }
@@ -59,32 +61,34 @@ export function generateInitialInbox(
 **Role:** ${agentType}
 **Worker Name:** ${workerName}
 
-## Your Task
+## Your Assigned Tasks
 
-${taskDescription}
+- **Task 1**: Worker 1 bootstrap
+  Description: ${taskDescription}
+
+Report findings/results back to the lead and keep task updates current.
+  Status: pending
 
 ## Instructions
 
-1. Read and understand the task above
-2. Send startup ACK to the lead (write to status.json or use MCP tool)
-3. Claim your task via state API
-4. Execute the task using qwx with -y flag
-5. Write result to task file when complete
-6. Update status to idle
-7. Wait for next instruction
+1. Load and follow \`skills/worker/SKILL.md\`
+2. Send startup ACK to the lead mailbox with \`to_worker="leader-fixed"\`
+   - Body: "ACK from ${workerName}: initialized and ready to execute assigned tasks."
+3. Start with the first non-blocked task
+4. Read the task file for your selected task id at \`.qmx/state/team/${teamName}/tasks/task-<id>.json\` (example: \`task-1.json\`)
+5. Task id format:
+   - State/MCP APIs use \`task_id: "<id>"\` (example: \`"1"\`), not \`"task-1"\`.
+6. Claim the task to claim it
+7. Complete the work described in the task
+8. Write \`{"status": "completed", "result": "brief summary"}\` to the task file
+9. Write \`{"state": "idle"}\` to \`.qmx/state/team/${teamName}/workers/${workerName}/status.json\`
+10. Wait for the next instruction from the lead
 
-## Environment
-
-- \`QMX_TEAM_WORKER=${teamName}/${workerName}\`
-- \`QMX_TEAM_STATE_ROOT=.qmx/state\`
-- Auto-approval enabled (-y flag)
-
-## Verification
-
-When marking completion, include:
-- \`Verification:\` section
-- PASS/FAIL checks with evidence
-- Commands used and their output
+## Scope Rules
+- Only edit files described in your task descriptions
+- Do NOT edit files that belong to other workers
+- If you need to modify a shared/common file, write \`{"state": "blocked", "reason": "need to edit shared file X"}\` to your status file and wait
+- Do NOT spawn sub-agents. Complete work in this worker session.
 `;
 }
 

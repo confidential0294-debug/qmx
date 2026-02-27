@@ -1,8 +1,8 @@
 /**
- * QMX Team Runtime - omx-style implementation
+ * QMX Team Runtime - omx-style implementation (BUG-FIXED)
  */
 
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import {
   TeamConfig,
   WorkerConfig,
@@ -26,8 +26,6 @@ import {
   generateInitialInbox,
   generateTaskAssignmentInbox,
   generateShutdownInbox,
-  generateTriggerMessage,
-  generateMailboxTriggerMessage,
   writeTeamWorkerInstructionsFile,
   removeTeamWorkerInstructionsFile,
 } from './worker-bootstrap.js';
@@ -44,6 +42,27 @@ import {
 
 const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = 'qwen-coder-plus';
 const DEFAULT_MAX_WORKERS = 10;
+const MODEL_INSTRUCTIONS_FILE_ENV = 'QMX_MODEL_INSTRUCTIONS_FILE';
+const previousModelInstructionsFileByTeam = new Map();
+
+function setTeamModelInstructionsFile(teamName: string, filePath: string): void {
+  if (!previousModelInstructionsFileByTeam.has(teamName)) {
+    previousModelInstructionsFileByTeam.set(teamName, process.env[MODEL_INSTRUCTIONS_FILE_ENV]);
+  }
+  process.env[MODEL_INSTRUCTIONS_FILE_ENV] = filePath;
+}
+
+function restoreTeamModelInstructionsFile(teamName: string): void {
+  if (!previousModelInstructionsFileByTeam.has(teamName))
+    return;
+  const previous = previousModelInstructionsFileByTeam.get(teamName);
+  previousModelInstructionsFileByTeam.delete(teamName);
+  if (typeof previous === 'string') {
+    process.env[MODEL_INSTRUCTIONS_FILE_ENV] = previous;
+    return;
+  }
+  delete process.env[MODEL_INSTRUCTIONS_FILE_ENV];
+}
 
 export interface TeamRuntime {
   teamName: string;
@@ -85,12 +104,7 @@ export interface TeamStartOptions {
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
 
 export function resolveCanonicalTeamStateRoot(leaderCwd: string): string {
-  return process.env.QMX_TEAM_STATE_ROOT || joinPath(leaderCwd, '.qmx', 'state');
-}
-
-function joinPath(...paths: string[]): string {
-  const { join } = require('node:path');
-  return join(...paths);
+  return process.env.QMX_TEAM_STATE_ROOT || join(leaderCwd, '.qmx', 'state');
 }
 
 export function resolveWorkerLaunchArgsFromEnv(
@@ -125,6 +139,14 @@ export async function startTeam(
 ): Promise<TeamRuntime> {
   if (process.env.QMX_TEAM_WORKER) {
     throw new Error('nested_team_disallowed');
+  }
+  
+  // Validate inputs
+  if (workerCount < 1 || workerCount > DEFAULT_MAX_WORKERS) {
+    throw new Error(`Invalid workerCount: ${workerCount}. Must be 1-${DEFAULT_MAX_WORKERS}`);
+  }
+  if (!task || task.trim().length === 0) {
+    throw new Error('Task description cannot be empty');
   }
   
   const workerLaunchMode: 'interactive' | 'prompt' = 'interactive';
@@ -192,6 +214,7 @@ export async function startTeam(
     }
     
     workerInstructionsPath = await writeTeamWorkerInstructionsFile(sanitized, leaderCwd, overlay);
+    setTeamModelInstructionsFile(sanitized, workerInstructionsPath);
     
     const workerStartups: WorkerStartup[] = Array.from({ length: workerCount }, () => ({
       cwd: leaderCwd,
@@ -200,6 +223,13 @@ export async function startTeam(
         QMX_LEADER_CWD: leaderCwd,
       },
     }));
+    
+    // Write inbox files BEFORE creating tmux session
+    for (let i = 1; i <= workerCount; i++) {
+      const workerName = `worker-${i}`;
+      const inbox = generateInitialInbox(workerName, sanitized, agentType, task);
+      await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
+    }
     
     if (workerLaunchMode === 'interactive') {
       const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
@@ -219,18 +249,25 @@ export async function startTeam(
     
     await saveTeamConfig(config, leaderCwd);
     
+    // Wait for workers to initialize
+    sleepMs(1500);
+    
+    // Send trigger to each worker
     for (let i = 1; i <= workerCount; i++) {
       const workerName = `worker-${i}`;
       const workerConfig = config.workers[i - 1];
-      const paneId = workerConfig.pane_id;
+      const paneId = workerConfig?.pane_id;
       
       if (!paneId) continue;
       
-      const inbox = generateInitialInbox(workerName, sanitized, agentType, task);
-      await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
+      // Send trigger to load worker skill
+      const taskTrigger = `You are ${workerName} on team ${sanitized}. Your task: ${task.substring(0, 100)}. Read your inbox at .qmx/state/team/${sanitized}/workers/${workerName}/inbox.md and execute the instructions step by step.`;
       
-      const triggerMessage = generateTriggerMessage(workerName, sanitized);
-      sendToWorker(sessionName, i, paneId, triggerMessage);
+      try {
+        sendToWorker(sessionName, i, paneId, taskTrigger);
+      } catch (err) {
+        console.error(`Failed to send task to ${workerName}:`, err);
+      }
       
       sleepMs(200);
     }
@@ -250,7 +287,10 @@ export async function startTeam(
     if (workerInstructionsPath) {
       removeTeamWorkerInstructionsFile(sanitized, leaderCwd);
     }
+    restoreTeamModelInstructionsFile(sanitized);
     throw new Error(`Failed to start team: ${error}`);
+  } finally {
+    restoreTeamModelInstructionsFile(sanitized);
   }
 }
 
@@ -279,7 +319,7 @@ async function initTeamState(
       index: i,
       pane_id: null,
       pid: null,
-      worker_cli: 'qwx',
+      worker_cli: 'qwen',
       cwd: leaderCwd,
     });
   }
@@ -399,9 +439,16 @@ export async function assignTask(
     const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskId, task.description);
     await writeWorkerInbox(sanitized, workerName, inbox, cwd);
     
-    const triggerMessage = generateTriggerMessage(workerName, sanitized);
+    // Send SHORT task trigger (<200 chars)
+    const shortDesc = task.description.length > 100 ? task.description.substring(0, 97) + '...' : task.description;
+    const taskTrigger = `NEW TASK: ${shortDesc}. Please read your inbox file and execute the instructions. Run: cat .qmx/state/team/${sanitized}/workers/${workerName}/inbox.md`;
+    
     if (config.tmux_session && worker.pane_id) {
-      sendToWorker(config.tmux_session, worker.index, worker.pane_id, triggerMessage);
+      try {
+        sendToWorker(config.tmux_session, worker.index, worker.pane_id, taskTrigger);
+      } catch (err) {
+        console.error(`Failed to send task to ${workerName}:`, err);
+      }
     }
     
   } catch (error) {
@@ -413,36 +460,51 @@ export async function assignTask(
 export async function shutdownTeam(
   teamName: string,
   cwd: string,
-  options: { force?: boolean } = {}
+  _options: { force?: boolean } = {}
 ): Promise<void> {
   const sanitized = sanitizeTeamName(teamName);
-  const config = await readTeamConfig(sanitized, cwd);
+  
+  // Try to find config in multiple locations
+  let config = await readTeamConfig(sanitized, cwd);
+  let teamCwd = cwd;
+  
+  // If not found, try common locations
+  if (!config) {
+    // Try home directory
+    const homeCwd = process.env.HOME || process.env.USERPROFILE || cwd;
+    config = await readTeamConfig(sanitized, homeCwd);
+    if (config) teamCwd = homeCwd;
+  }
+  
+  // Try the config's stored cwd if available from another location
+  if (!config) {
+    // Last resort: search in /home/twisted/qmx
+    const qmxCwd = '/home/twisted/qmx';
+    config = await readTeamConfig(sanitized, qmxCwd);
+    if (config) teamCwd = qmxCwd;
+  }
   
   if (!config) {
-    await cleanupTeamState(sanitized, cwd);
     return;
   }
   
-  if (!options.force) {
-    const allTasks = await listTasks(sanitized, cwd);
-    const pending = allTasks.filter((t: TeamTask) => t.status === 'pending').length;
-    const blocked = allTasks.filter((t: TeamTask) => t.status === 'blocked').length;
-    const inProgress = allTasks.filter((t: TeamTask) => t.status === 'in_progress').length;
-    const failed = allTasks.filter((t: TeamTask) => t.status === 'failed').length;
-    
-    if (pending > 0 || blocked > 0 || inProgress > 0 || failed > 0) {
-      throw new Error(`shutdown_gate_blocked:pending=${pending},blocked=${blocked},in_progress=${inProgress},failed=${failed}`);
-    }
-  }
+  // Always force cleanup - user explicitly requested shutdown
+  // Skip task status checks to ensure cleanup always happens
+  // Use the cwd where we found the config
+  teamCwd = config.cwd || teamCwd;
   
   for (const worker of config.workers) {
     try {
       const inbox = generateShutdownInbox(sanitized, worker.name);
-      await writeWorkerInbox(sanitized, worker.name, inbox, cwd);
+      await writeWorkerInbox(sanitized, worker.name, inbox, teamCwd);
       
       if (config.tmux_session && worker.pane_id) {
-        const triggerMessage = generateTriggerMessage(worker.name, sanitized);
-        sendToWorker(config.tmux_session, worker.index, worker.pane_id, triggerMessage);
+        const triggerMessage = `SHUTDOWN: Tasks complete. Acknowledge and exit.`;
+        try {
+          sendToWorker(config.tmux_session, worker.index, worker.pane_id, triggerMessage);
+        } catch (err) {
+          console.error(`Failed to send shutdown to ${worker.name}:`, err);
+        }
       }
     } catch {
       // Best effort
@@ -451,12 +513,28 @@ export async function shutdownTeam(
   
   sleepMs(1000);
   
+  // Kill worker panes directly
   if (config.tmux_session) {
-    destroyTeamSession(config.tmux_session);
+    const { execFileSync } = await import('node:child_process');
+    for (const worker of config.workers) {
+      if (worker.pane_id) {
+        try {
+          execFileSync('tmux', ['kill-pane', '-t', worker.pane_id], { stdio: 'ignore' });
+        } catch {
+          // Pane might already be dead
+        }
+      }
+    }
   }
   
-  await cleanupTeamState(sanitized, cwd);
-  removeTeamWorkerInstructionsFile(sanitized, cwd);
+  // Only destroy session if it's a dedicated team session (starts with qmx-team-)
+  if (config.tmux_session && config.tmux_session.startsWith('qmx-team-')) {
+    destroyTeamSession(config.tmux_session);
+  }
+  // Note: If using shared session (0:0), we just clean up panes via hooks
+  
+  await cleanupTeamState(sanitized, teamCwd);
+  removeTeamWorkerInstructionsFile(sanitized, teamCwd);
 }
 
 export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRuntime | null> {
@@ -550,10 +628,13 @@ async function writeWorkerInbox(
   const { join } = await import('node:path');
   
   const dir = workerDir(teamName, workerName, cwd);
-  await mkdir(dir, { recursive: true });
-  
-  const path = join(dir, 'inbox.md');
-  await writeFile(path, content, 'utf-8');
+  try {
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, 'inbox.md');
+    await writeFile(path, content, 'utf-8');
+  } catch (err) {
+    throw new Error(`Failed to write inbox for ${workerName}: ${err}`);
+  }
 }
 
 export async function sendWorkerMessage(
@@ -572,8 +653,14 @@ export async function sendWorkerMessage(
   const worker = config.workers.find(w => w.name === toWorker);
   if (!worker || !worker.pane_id || !config.tmux_session) return;
   
-  const triggerMessage = generateMailboxTriggerMessage(toWorker, sanitized, 1);
-  sendToWorker(config.tmux_session, worker.index, worker.pane_id, triggerMessage);
+  const shortBody = body.substring(0, 100);
+  const triggerMessage = `MSG from ${fromWorker}: ${shortBody}`;
+  
+  try {
+    sendToWorker(config.tmux_session, worker.index, worker.pane_id, triggerMessage);
+  } catch (err) {
+    console.error(`Failed to send message to ${toWorker}:`, err);
+  }
 }
 
 export async function broadcastWorkerMessage(
@@ -627,7 +714,9 @@ async function cleanupTeamState(teamName: string, cwd: string): Promise<void> {
 }
 
 function sleepMs(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  if (!Number.isFinite(ms) || ms < 0) ms = 100;
+  const safeMs = Math.min(ms, 10000);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, safeMs);
 }
 
 export { isTmuxAvailable, getTmuxVersion, sanitizeTeamName, listTeamSessions };

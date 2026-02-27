@@ -2,34 +2,31 @@
 
 /**
  * QMX - Qwen Multi-agent eXtension
- * Main CLI entry point with fallback support
+ * Main CLI entry point
  */
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { Command } from 'commander';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const root = join(__dirname, '..');
 
-// Try compiled first, fall back to source
 const distEntry = join(root, 'dist', 'cli', 'launch.js');
-const srcEntry = join(root, 'src', 'cli', 'launch.ts');
-
 const args = process.argv.slice(2);
 const command = args[0];
 
-// Handle built-in commands that don't need launch
 const builtInCommands = ['setup', 'doctor', 'team', 'hooks', 'hud', 'status', 'cancel', 'reasoning'];
 
-// Launch Qwen Code when run without arguments (like omx)
+// Launch Qwen Code when run without arguments
 if (args.length === 0) {
   launchQwenCode();
 }
 
-// Show help only for --help or -h
+// Show help
 if (command === '--help' || command === '-h') {
   showHelp();
   process.exit(0);
@@ -45,13 +42,11 @@ if (command === '--version' || command === '-V') {
 if (builtInCommands.includes(command)) {
   runCommand(command, args.slice(1));
 } else if (args.length > 0 && !command.startsWith('--')) {
-  // Unknown command
   console.error(`Unknown command: ${command}`);
   console.log('Run "qmx --help" for usage');
   process.exit(1);
 }
 
-// Launch Qwen Code
 function launchQwenCode() {
   const qwen = spawn('qwen', args, {
     stdio: 'inherit',
@@ -76,28 +71,37 @@ function launchQwenCode() {
   });
 }
 
-// Run a QMX command
-async function runCommand(command, commandArgs) {
+async function runCommand(commandName, commandArgs) {
   try {
-    // Try compiled first
-    if (existsSync(distEntry.replace('launch.js', `${command}.js`))) {
-      const module = await import(`../dist/cli/${command}.js`);
-      if (module.default) {
-        await module.default(commandArgs);
-      } else {
-        console.log(`Command '${command}' executed`);
-      }
-    } else {
-      console.error(`Command '${command}' not found. Run "npm run build" first.`);
+    const modulePath = join(root, 'dist', 'cli', `${commandName}.js`);
+    if (!existsSync(modulePath)) {
+      console.error(`Command '${commandName}' not found. Run "npm run build" first.`);
       process.exit(1);
     }
+    
+    const module = await import(modulePath);
+    
+    // Create program and register command
+    const program = new Command();
+    program.name('qmx').version('1.0.0');
+    
+    if (module[`${commandName}Command`]) {
+      module[`${commandName}Command`](program);
+      program.parse(['node', 'qmx', commandName, ...commandArgs]);
+    } else if (module.default) {
+      await module.default(commandArgs);
+    } else {
+      console.log(`Command '${commandName}' executed`);
+    }
   } catch (error) {
-    console.error(`Error running ${command}:`, error.message);
+    console.error(`Error running ${commandName}:`, error.message);
+    if (error.stack) {
+      console.error(error.stack);
+    }
     process.exit(1);
   }
 }
 
-// Show help
 function showHelp() {
   console.log(`
 QMX - Qwen Multi-agent eXtension v1.0.0
@@ -125,11 +129,10 @@ Options:
 
 Examples:
   qmx                     Launch Qwen Code
+  qmx team start 2:debugger "Find bugs" --name test
+  qmx team list
+  qmx team status <name>
   qmx setup               Initialize QMX
   qmx doctor              Check installation
-  qmx status              Show current status
-  qmx --high              Launch with high reasoning
-  npm run setup           Run setup via npm script
-  npm run doctor          Run doctor via npm script
 `);
 }
